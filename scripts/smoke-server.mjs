@@ -68,7 +68,8 @@ const ctx = {
   },
   llm: {
     async resolveModelInfo(provider, model) {
-      return { provider, id: model, name: model, inputModalities: ['text'] }
+      // glm-4.6v 模拟一个自己声明了 image 输入的可视模型。
+      return { provider, id: model, name: model, inputModalities: model === 'glm-4.6v' ? ['text', 'image'] : ['text'] }
     },
   },
 }
@@ -316,5 +317,74 @@ const patchedInfo = await ctx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flas
 assert.ok(Array.isArray(patchedInfo.inputModalities), '补丁后 inputModalities 应为数组')
 assert.ok(patchedInfo.inputModalities.includes('image'), '补丁后应声称支持 image 输入')
 assert.equal(patchedInfo.id, 'deepseek-v4-flash', '其余元数据应保留')
+
+// --- 8) userImages 模式（默认 auto） ---
+// auto + 模型自己声明了 image 输入：图片块原样保留 → 气泡走官方附件样式，原图进模型。
+const visionDecision = await preStepHandler(
+  { agent: { id: 'a1' }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'zai', model: 'glm-4.6v' }, signal: undefined },
+  async () => ({ kind: 'enter', messages: [userMsg] }),
+)
+assert.equal(visionDecision.messages[0].content[1].type, 'image', '可视模型不应被重写')
+assert.equal(visionDecision.messages[0], userMsg, '可视模型应原样返回消息对象')
+// auto + 文本模型（modelSelection 缺失/非可视）：仍重写为占位符（盲模型收图不退化）
+const blindDecision = await preStepHandler(
+  { agent: { id: 'a1' }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' }, signal: undefined },
+  async () => ({ kind: 'enter', messages: [userMsg] }),
+)
+assert.equal(blindDecision.messages[0].content[1].type, 'text', '文本模型应重写为占位符')
+
+// 迷你 ctx 工厂：验证 always / native 两个非默认模式
+function miniCtx() {
+  const state = { preStep: null, tools: [], patched: null }
+  const ctx = {
+    effect(fn) {
+      const disposed = fn()
+      return typeof disposed === 'function' ? disposed : () => {}
+    },
+    webServer: { register() { return () => {} } },
+    tools: { register(def) { state.tools.push(def); return () => {} } },
+    userQuestions: { ask() { throw new Error('unused') } },
+    on(event, handler) {
+      if (event === 'agent/pre-step') state.preStep = handler
+      return () => { if (state.preStep === handler) state.preStep = null }
+    },
+    attachments: {
+      async readImage(ref) { throw new Error(`unused: ${ref.attachmentId}`) },
+      imageHostPath() { return undefined },
+    },
+    llm: {
+      async resolveModelInfo(provider, model) {
+        return { provider, id: model, name: model, inputModalities: ['text'] }
+      },
+    },
+  }
+  return { ctx, state }
+}
+
+// always：可视模型也被重写（0.7.1 行为），模型能力补丁仍然生效
+{
+  const { ctx: alwaysCtx, state } = miniCtx()
+  apply(alwaysCtx, { userImages: 'always' })
+  const decisionAlways = await state.preStep(
+    { agent: { id: 'a2' }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'zai', model: 'glm-4.6v' }, signal: undefined },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.equal(decisionAlways.messages[0].content[1].type, 'text', 'always 模式应重写')
+  const info = await alwaysCtx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash')
+  assert.ok(info.inputModalities.includes('image'), 'always 模式应保留能力补丁')
+}
+
+// native：不重写、不打补丁——用户图片完全交回核心
+{
+  const { ctx: nativeCtx, state } = miniCtx()
+  apply(nativeCtx, { userImages: 'native' })
+  const decisionNative = await state.preStep(
+    { agent: { id: 'a3' }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' }, signal: undefined },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.equal(decisionNative.messages[0], userMsg, 'native 模式不应重写')
+  const info = await nativeCtx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash')
+  assert.equal(info.inputModalities.includes('image'), false, 'native 模式不应打能力补丁')
+}
 
 console.log('[dsh-plugin-image-tools] server smoke passed')

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.2] - 2026-11-07
+
+- 新增：**用户发来的图片不再一律被重写**。`agent/pre-step` 的重写改为按当前步骤的模型
+  能力决定（新配置 `userImages`，默认 `auto`）：模型自己声明了 `image` 输入时图片块
+  原样保留——原图直接进模型（原生视觉），用户气泡由核心按官方附件样式渲染、点击可放大，
+  插件的 `dshimg:` 占位符与自绘图片不再出现；只对看不到图的模型重写为文本占位符
+  （`save_received_images` 链路完全不变）。
+  - 判断用**打补丁前**的 `resolveModelInfo`：能力补丁会把 `image` 无条件补上，用它判断
+    等于永远为真。读不到元数据（或该步没有 `modelSelection`）时按「看不到图」处理，
+    仍然重写——宁可给占位符，也不让文本-only 适配器收到图片块抛 `UNSUPPORTED_CONTENT`。
+  - `userImages: 'always'` 恢复 0.7.1 的无条件重写；`userImages: 'native'` 连模型能力
+    补丁都不打，用户图片完全交回核心。
+  - 原因：0.4.0 起「盲模型收图」的重写是无条件的，连声明了 image 输入的模型也拿不到原图，
+    视觉模型用户必须先停用插件才能看原生图（Issue #1 第 3 条）。重写只为解决
+    `UNSUPPORTED_CONTENT`，对能看图的模型来说是纯副作用。
+- 测试：`selfcheck` 增加 `normalizeUserImagesMode` / `acceptsImageInput` / `modelSeesImages`
+  用例；`smoke-server` 增加 auto（可视/文本模型两种分支）/ always / native 三组断言
+  （含「native 不打能力补丁」）。
+
 ## [0.7.1] - 2026-10-19
 
 - 修复用户上传的图片不显示：DSH 0.2.0-rc.2 起附件 id 改为内容寻址的 `sha256:<64 hex>`，

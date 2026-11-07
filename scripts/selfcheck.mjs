@@ -15,6 +15,9 @@ import {
   imagePlaceholderText,
   extractImageTokenIds,
   rewriteMessageImages,
+  normalizeUserImagesMode,
+  acceptsImageInput,
+  modelSeesImages,
   MAX_IMAGE_BYTES,
 } from '../lib/index.js'
 
@@ -27,6 +30,29 @@ async function ok(name, fn) {
 
 async function main() {
   console.log('[dsh-plugin-image-tools] selfcheck')
+
+  // --- userImages 模式 ---
+  await ok('normalizeUserImagesMode 回落默认 auto', () => {
+    assert.equal(normalizeUserImagesMode(undefined), 'auto')
+    assert.equal(normalizeUserImagesMode('nope'), 'auto')
+    assert.equal(normalizeUserImagesMode('always'), 'always')
+    assert.equal(normalizeUserImagesMode('native'), 'native')
+  })
+  await ok('acceptsImageInput 只认 image 模态', () => {
+    assert.equal(acceptsImageInput(['text', 'image']), true)
+    assert.equal(acceptsImageInput(['text']), false)
+    assert.equal(acceptsImageInput(undefined), false)
+    assert.equal(acceptsImageInput('image'), false)
+  })
+  await ok('modelSeesImages 用原始方法判断、异常按看不到图', async () => {
+    const seesText = async () => ({ inputModalities: ['text'] })
+    const seesImage = async () => ({ inputModalities: ['text', 'image'] })
+    assert.equal(await modelSeesImages(seesImage, null, { provider: 'p', model: 'm' }), true)
+    assert.equal(await modelSeesImages(seesText, null, { provider: 'p', model: 'm' }), false)
+    assert.equal(await modelSeesImages(seesImage, null, undefined), false)
+    assert.equal(await modelSeesImages(seesImage, null, { provider: 'p' }), false)
+    assert.equal(await modelSeesImages(async () => { throw new Error('boom') }, null, { provider: 'p', model: 'm' }), false)
+  })
 
   // --- sniffMediaType ---
   await ok('sniff PNG', () => {
