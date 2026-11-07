@@ -387,4 +387,62 @@ function miniCtx() {
   assert.equal(info.inputModalities.includes('image'), false, 'native 模式不应打能力补丁')
 }
 
+// native：不重写、不打补丁——用户图片完全交回核心
+{
+  const { ctx: nativeCtx, state } = miniCtx()
+  apply(nativeCtx, { userImages: 'native' })
+  const decisionNative = await state.preStep(
+    { agent: { id: 'a3' }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' }, signal: undefined },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.equal(decisionNative.messages[0], userMsg, 'native 模式不应重写')
+  const info = await nativeCtx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash')
+  assert.equal(info.inputModalities.includes('image'), false, 'native 模式不应打能力补丁')
+}
+
+// --- 9) offload 模式：消息内容一字不动，交给核心的 image/offload 投影 ---
+function fakeSession(seq) {
+  const appends = []
+  return {
+    appends,
+    ownEvents() { return [{ seq, type: 'user/message', data: userMsg }] },
+    deriveEventMessage(event) { return event.data },
+    append(type, data) { appends.push({ type, data }); return {} },
+  }
+}
+{
+  const { ctx: offCtx, state } = miniCtx()
+  apply(offCtx, { userImages: 'offload' })
+  const session = fakeSession(244)
+  const decisionOff = await state.preStep(
+    { agent: { id: 'a4', session }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' }, signal: undefined },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.equal(decisionOff.messages[0], userMsg, 'offload 模式不应改消息内容（气泡由核心渲染官方样式）')
+  assert.equal(session.appends.length, 1, '应写入一次 image/offload 决策')
+  assert.equal(session.appends[0].type, 'image/offload')
+  assert.deepEqual(session.appends[0].data.targets, [{ seq: 244, imageIndexes: [0] }], '应按事件 seq + 图片下标标记')
+
+  // 已标记过的图片不再重复追加
+  const session2 = fakeSession(245)
+  const markedMsg = { ...userMsg, content: [{ type: 'text', text: '看看这张截图' }, { type: 'image', attachment: imgRef, offloaded: true }] }
+  session2.deriveEventMessage = () => markedMsg
+  const decisionAgain = await state.preStep(
+    { agent: { id: 'a4', session: session2 }, messages: [markedMsg], turn: 1, step: 1, modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' }, signal: undefined },
+    async () => ({ kind: 'enter', messages: [markedMsg] }),
+  )
+  assert.equal(decisionAgain.messages[0], markedMsg, '已投影过的消息应原样返回')
+  assert.equal(session2.appends.length, 0, '已 offload 的图片不应重复追加')
+
+  // 拿不到 session：回退到文本重写，盲模型收图不退化
+  const { ctx: offCtx2, state: state2 } = miniCtx()
+  apply(offCtx2, { userImages: 'offload' })
+  const decisionFallback = await state2.preStep(
+    { agent: { id: 'a5' }, messages: [userMsg], turn: 1, step: 1, modelSelection: { provider: 'deepseek', model: 'deepseek-v4-flash' }, signal: undefined },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.equal(decisionFallback.messages[0].content[1].type, 'text', '无 session 时应回退到文本重写')
+  assert.ok(decisionFallback.messages[0].content[1].text.includes('dshimg:att-abc123def456'), '回退路径仍应带 token')
+}
+
 console.log('[dsh-plugin-image-tools] server smoke passed')

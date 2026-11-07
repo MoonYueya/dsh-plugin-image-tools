@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.3] - 2026-11-07
+
+- 新增：`userImages: 'offload'`——**完全不改消息内容**的可选模式。看不到图的模型改为让核心按
+  官方 `image/offload` 决策投影（`session.append('image/offload', { targets })`，与
+  `@deepseek-ai/dsh-compaction-image-offload` 同一条路）：消息事件与气泡样式不变，气泡里仍是
+  官方的附件缩略图，只有请求投影把图片块换成核心的占位文本（`offloadedImageText`，含完整
+  attachmentId，`save_received_images` 可直接用）。
+  - 为什么不直接把消息里的图片块标成 `offloaded: true`：核心的会话格式校验对图片块只放行
+    `{ type, attachment }` 两个键（`assertReleasedV0Keys(block, ['type','attachment'])`），
+    多出的字段一旦随消息落盘，会话会读取失败。标记只能由核心在请求投影阶段生成。
+  - 写入失败（旧核心、拿不到 `session`）或无 session 时自动回退到文本重写，盲模型收图不退化。
+- 测试：selfcheck 34 项（新增 `offloadUserImages` / `recordMessageImageRefs` / `hasLiveImageBlocks` 用例）；
+  `smoke-server` 增加 offload 模式断言（不改消息 / targets 形态 / 已投影不重复追加 / 无 session 回退）。
+
 ## [0.7.2] - 2026-11-07
 
 - 新增：**用户发来的图片不再一律被重写**。`agent/pre-step` 的重写改为按当前步骤的模型
